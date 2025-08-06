@@ -130,7 +130,7 @@ func process_frame(delta: float) -> State:
 	# Check for buffered inputs that can now be executed
 	if parent.has_valid_dash_buffer() and dash_state and dash_state.is_dash_available():
 		print("Executing buffered dash!")
-		parent.consume_dash_buffer()
+		parent.consume_input_buffer("dash")
 		return dash_state
 	
 	# Update air timer for camera panning
@@ -252,9 +252,9 @@ func process_physics(delta: float) -> State:
 	parent.move_and_slide()
 	
 	# Check for buffered jump that can now be executed
-	if parent.has_valid_jump_buffer() and parent.can_jump():
+	if parent.has_valid_input_buffer("jump") and parent.can_jump():
 		# print("Executing buffered jump from fall state!")
-		parent.consume_jump_buffer()
+		parent.consume_input_buffer("jump")
 		return jump_state
 	
 	# Check for head bonk during fall (rare but possible)

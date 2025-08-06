@@ -177,4 +177,3 @@ tile_map_data = PackedByteArray("AAD9/wAAAQAAAAAAAAD+/wAAAQAAAAAAAAD//wAAAQAAAAA
 tile_set = SubResource("TileSet_u5sy4")
 
 [node name="PlayerManager" parent="Level" instance=ExtResource("7_u5sy4")]
-track_count = 4

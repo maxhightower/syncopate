@@ -62,7 +62,17 @@ func _ready() -> void:
 #func _unhandled_input(event: InputEvent) -> void:
 #	tracks[active_track_idx]._unhandled_input(event)
 
+
 func _unhandled_input(event: InputEvent) -> void:
+	# Speed up/slow down tick rate with C and Z (Godot 4.x compatible)
+	if event is InputEventKey and event.pressed and not event.echo:
+		if event.keycode == KEY_Z:
+			Engine.time_scale = max(0.1, Engine.time_scale - 0.5)
+			print("[PlayerManager] Slowed time_scale to ", Engine.time_scale)
+		elif event.keycode == KEY_C:
+			Engine.time_scale = Engine.time_scale + 0.5
+			print("[PlayerManager] Sped up time_scale to ", Engine.time_scale)
+	# Forward input to active track
 	if active_track_idx >= 0 and active_track_idx < tracks.size():
 		tracks[active_track_idx]._unhandled_input(event)
 
