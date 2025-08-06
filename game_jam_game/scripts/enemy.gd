@@ -3,6 +3,10 @@ extends CharacterBody2D
 @onready var animation_player := $AnimationPlayer
 @onready var sprite := $Sprite2D
 
+@onready var state_buffer: RingBuffer = RingBuffer.create_by_seconds(15, Engine.get_physics_ticks_per_second())
+var replay_index: int = 0
+var replay_length: int = 0
+
 # Physics variables (matching player physics system)
 var gravity: float = ProjectSettings.get_setting("physics/2d/default_gravity")  # Base gravity from project settings
 @export var fall_gravity_scale: float = 20.0  # Same as player's fall state
@@ -179,8 +183,12 @@ func _ready():
 	_build_decision_tree()
 
 func reset_to_spawn() -> void:
-		global_position = patrol_start_position
-		velocity = Vector2.ZERO
+                global_position = patrol_start_position
+                velocity = Vector2.ZERO
+
+func reset_for_new_loop() -> void:
+        replay_index = 0
+        replay_length = state_buffer.length
 
 # Recursive function to find player
 func _find_player_recursive(node: Node) -> CharacterBody2D:
@@ -433,11 +441,18 @@ func set_passive_body_damage_enabled(enabled: bool):
 			print("Enemy passive body damage ", "enabled" if enabled else "disabled")
 
 func _physics_process(delta):
-	# Update spawn invincibility timer
-	if is_spawn_invincible:
-		spawn_invincibility_timer -= delta
-		if spawn_invincibility_timer <= 0.0:
-			is_spawn_invincible = false
+        if replay_index < replay_length:
+                var tick = state_buffer.get_at(replay_index)
+                position = tick.position
+                velocity = tick.velocity
+                if "health" in tick:
+                        current_health = tick.health
+                replay_index += 1
+        # Update spawn invincibility timer
+        if is_spawn_invincible:
+                spawn_invincibility_timer -= delta
+                if spawn_invincibility_timer <= 0.0:
+                        is_spawn_invincible = false
 			print("Enemy spawn invincibility ended")
 	
 	# Update attack timer
@@ -550,7 +565,14 @@ func _physics_process(delta):
 			var collision = get_slide_collision(i)
 			if collision and collision.get_travel().length() > max_horizontal_penetration:
 				# Force push away from collision
-				global_position += collision.get_normal() * collision_safety_margin
+                                global_position += collision.get_normal() * collision_safety_margin
+
+        # Record state for replay
+        state_buffer.push({
+                "health": current_health,
+                "position": position,
+                "velocity": velocity,
+        })
 
 # AI Behavior System (Decision Tree Based)
 func update_ai_behavior(delta: float):
