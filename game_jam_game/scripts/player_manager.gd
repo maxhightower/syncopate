@@ -16,8 +16,12 @@ var track_colors: Array[Color] = [
 # Reference to the UI (can be set in editor or found at runtime)
 @export var cassette_ui: CassetteButtonlessUI
 
+
 # Holds the instantiated Player tracks
 var tracks: Array[Player] = []
+
+# The spawn point for all players
+@export var spawn_point: Vector2 = Vector2.ZERO
 
 # Index of the currently active track
 var active_track_idx: int = -1
@@ -30,8 +34,8 @@ func _ready() -> void:
 	for i in range(track_count):
 		var player = track_scene.instantiate() as Player
 		player.name = "Track%d" % i
-		# Position all players at the same location since only one will be visible at a time
-		player.position = Vector2.ZERO
+		# Position all players at the spawn point
+		player.position = spawn_point
 		# Tint the player based on its track color
 		player.modulate = track_colors[i % track_colors.size()]
 		add_child(player)
@@ -48,10 +52,9 @@ func _ready() -> void:
 		if player.has_node("Camera2D"):
 			player.get_node("Camera2D").enabled = false
 
-		# Activate the first track by default
-		#active_track_idx = 0
-		activate_track(0)
-	
+	# Activate the first track by default
+	activate_track(0)
+
 	# Find and connect to the UI
 	_find_and_connect_ui()
 
@@ -81,6 +84,10 @@ func activate_track(idx: int) -> void:
 	if active_track_idx == idx:
 		return
 
+	# Move the new active player to the spawn point
+	if idx >= 0 and idx < tracks.size():
+		tracks[idx].global_position = spawn_point
+
 	for i in range(tracks.size()):
 		var is_active := i == idx
 		tracks[i].set_process_input(is_active)
@@ -92,7 +99,6 @@ func activate_track(idx: int) -> void:
 
 	active_track_idx = idx
 
-	
 	# Move the main camera to follow the active player
 	if main_camera and idx < tracks.size():
 		var active_player = tracks[idx]
@@ -100,9 +106,9 @@ func activate_track(idx: int) -> void:
 		var tween = create_tween()
 		tween.tween_property(main_camera, "global_position", active_player.global_position, 0.3)
 		tween.tween_callback(_update_camera_follow)
-	
+
 	print("[PlayerManager] Switched to track %d" % idx)
-	
+
 	# Update the UI to show the correct track button state (but don't call switch_to_track to avoid loops)
 	if cassette_ui and cassette_ui.has_method("get_current_track"):
 		var ui_track = cassette_ui.get_current_track()
