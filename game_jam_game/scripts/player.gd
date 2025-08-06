@@ -117,7 +117,23 @@ func _ready() -> void:
 	# No manual initialization needed for the generalized buffer system
 	
 func set_total_time(time: float) -> void:
-	total_time = time
+        total_time = time
+
+func _pad_ring_buffer_to_full() -> void:
+	var rb := track1
+	if rb.length >= rb.buffer_size:
+		return
+	var last_tick = rb.get_latest()
+	if last_tick == null:
+		last_tick = {
+			"input": {},
+			"seconds": total_time,
+			"health": current_health,
+			"position": self.position,
+			"velocity": self.velocity
+		}
+	while rb.length < rb.buffer_size:
+		rb.push(last_tick)
 
 func reset_to_spawn() -> void:
 		global_position = spawn_position
@@ -766,9 +782,11 @@ func die() -> void:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 func set_ghost_mode(ghost: bool) -> void:
-	"""Set the player's ghost mode state"""
-	is_ghost_mode = ghost
-	is_replaying = ghost
+        """Set the player's ghost mode state"""
+        if ghost:
+                _pad_ring_buffer_to_full()
+        is_ghost_mode = ghost
+        is_replaying = ghost
 	if is_replaying:
 		track_replay_index = 0
 	else:
