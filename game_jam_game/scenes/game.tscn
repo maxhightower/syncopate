@@ -1,4 +1,4 @@
-[gd_scene load_steps=10 format=4 uid="uid://cwbv2y4y74b4t"]
+[gd_scene load_steps=11 format=4 uid="uid://cwbv2y4y74b4t"]
 
 [ext_resource type="Texture2D" uid="uid://dpb0kysm7pg57" path="res://assets/sprites/grid.jpg" id="4_lbhrr"]
 [ext_resource type="Texture2D" uid="uid://q44iosxd057y" path="res://assets/sprites/world_tileset.png" id="5_iywne"]
@@ -6,6 +6,7 @@
 [ext_resource type="PackedScene" uid="uid://dvvyxv8mj7fho" path="res://scenes/player_manager.tscn" id="7_u5sy4"]
 [ext_resource type="Script" uid="uid://dkrqctvyafve4" path="res://scripts/damage_particle_manager.gd" id="8_damage_particle_manager"]
 [ext_resource type="PackedScene" uid="uid://dmn11pyh7fi6f" path="res://scenes/enemy.tscn" id="9_0tnpc"]
+[ext_resource type="Script" uid="uid://dts9hkqk4b4y5" path="res://scripts/enemy_manager.gd" id="10_enemy_manager"]
 
 [sub_resource type="WorldBoundaryShape2D" id="WorldBoundaryShape2D_e2o6t"]
 distance = 256.0
@@ -177,3 +178,5 @@ tile_map_data = PackedByteArray("AAD9/wAAAQAAAAAAAAD+/wAAAQAAAAAAAAD//wAAAQAAAAA
 tile_set = SubResource("TileSet_u5sy4")
 
 [node name="PlayerManager" parent="Level" instance=ExtResource("7_u5sy4")]
+[node name="EnemyManager" type="Node" parent="Level"]
+script = ExtResource("10_enemy_manager")

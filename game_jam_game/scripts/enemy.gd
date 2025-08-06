@@ -3,6 +3,12 @@ extends CharacterBody2D
 @onready var animation_player := $AnimationPlayer
 @onready var sprite := $Sprite2D
 
+# -- Loop recording system -- #
+@onready var state_buffer: RingBuffer = RingBuffer.create_by_seconds(15, Engine.get_physics_ticks_per_second())
+var is_replaying: bool = false
+var replay_index: int = 0
+var is_dead: bool = false
+
 # Physics variables (matching player physics system)
 var gravity: float = ProjectSettings.get_setting("physics/2d/default_gravity")  # Base gravity from project settings
 @export var fall_gravity_scale: float = 20.0  # Same as player's fall state
@@ -132,10 +138,10 @@ class ActionNode extends DecisionTreeNode:
 var decision_tree: DecisionTreeNode
 
 func _ready():
-	# Add the enemy to a group so other systems can find it
-	add_to_group("enemies")
-	current_health = max_health
-	patrol_start_position = global_position
+        # Add the enemy to a group so other systems can find it
+        add_to_group("enemies")
+        current_health = max_health
+        patrol_start_position = global_position
 	
 	# Scale down the enemy to fit better on platforms
 	scale = Vector2(0.8, 0.8)  # Make enemy 80% of original size
@@ -175,12 +181,33 @@ func _ready():
 	print("Enemy is_on_floor(): ", is_on_floor())
 	print("Enemy patrol start position: ", patrol_start_position)
 	
-	# Build the decision tree
-	_build_decision_tree()
+        # Build the decision tree
+        _build_decision_tree()
+
+        # Register with enemy manager after scene is ready
+        call_deferred("_register_with_manager")
+
+func _register_with_manager() -> void:
+        var manager = get_tree().get_first_node_in_group("enemy_manager")
+        if manager:
+                manager.register_enemy(self)
 
 func reset_to_spawn() -> void:
-		global_position = patrol_start_position
-		velocity = Vector2.ZERO
+                global_position = patrol_start_position
+                velocity = Vector2.ZERO
+
+func reset_for_new_loop() -> void:
+        reset_to_spawn()
+        is_dead = false
+        visible = true
+        if has_node("CollisionShape2D"):
+                $CollisionShape2D.disabled = false
+        if has_node("HurtBox/CollisionShape2D"):
+                $HurtBox/CollisionShape2D.disabled = false
+        if has_node("BodyHitBox/CollisionShape2D"):
+                $BodyHitBox/CollisionShape2D.disabled = false
+        is_replaying = true
+        replay_index = 0
 
 # Recursive function to find player
 func _find_player_recursive(node: Node) -> CharacterBody2D:
@@ -433,12 +460,31 @@ func set_passive_body_damage_enabled(enabled: bool):
 			print("Enemy passive body damage ", "enabled" if enabled else "disabled")
 
 func _physics_process(delta):
-	# Update spawn invincibility timer
-	if is_spawn_invincible:
-		spawn_invincibility_timer -= delta
-		if spawn_invincibility_timer <= 0.0:
-			is_spawn_invincible = false
-			print("Enemy spawn invincibility ended")
+        if is_replaying:
+                if state_buffer.length == 0:
+                        return
+                var tick = state_buffer.get_at(replay_index)
+                global_position = tick.position
+                velocity = tick.velocity
+                visible = tick.alive
+                is_dead = not tick.alive
+                replay_index = (replay_index + 1) % state_buffer.length
+                return
+
+        if is_dead:
+                state_buffer.push({
+                        "position": global_position,
+                        "velocity": velocity,
+                        "alive": false
+                })
+                return
+
+        # Update spawn invincibility timer
+        if is_spawn_invincible:
+                spawn_invincibility_timer -= delta
+                if spawn_invincibility_timer <= 0.0:
+                        is_spawn_invincible = false
+                        print("Enemy spawn invincibility ended")
 	
 	# Update attack timer
 	if attack_timer > 0:
@@ -545,12 +591,18 @@ func _physics_process(delta):
 	move_and_slide()
 	
 	# Additional safety check: if enemy is still overlapping significantly, move it out
-	if get_slide_collision_count() > 0:
-		for i in get_slide_collision_count():
-			var collision = get_slide_collision(i)
-			if collision and collision.get_travel().length() > max_horizontal_penetration:
-				# Force push away from collision
-				global_position += collision.get_normal() * collision_safety_margin
+        if get_slide_collision_count() > 0:
+                for i in get_slide_collision_count():
+                        var collision = get_slide_collision(i)
+                        if collision and collision.get_travel().length() > max_horizontal_penetration:
+                                # Force push away from collision
+                                global_position += collision.get_normal() * collision_safety_margin
+
+        state_buffer.push({
+                "position": global_position,
+                "velocity": velocity,
+                "alive": true
+        })
 
 # AI Behavior System (Decision Tree Based)
 func update_ai_behavior(delta: float):
@@ -1069,9 +1121,18 @@ func take_damage(damage_amount: int) -> void:
 		die()
 
 func die():
-	print("Enemy defeated!")
-	# You can add death effects here (particles, sound, etc.)
-	queue_free()
+        if is_dead:
+                return
+        print("Enemy defeated!")
+        # You can add death effects here (particles, sound, etc.)
+        is_dead = true
+        visible = false
+        if has_node("CollisionShape2D"):
+                $CollisionShape2D.disabled = true
+        if has_node("HurtBox/CollisionShape2D"):
+                $HurtBox/CollisionShape2D.disabled = true
+        if has_node("BodyHitBox/CollisionShape2D"):
+                $BodyHitBox/CollisionShape2D.disabled = true
 
 # Apply knockback when hit
 func apply_knockback(knockback_vector: Vector2):

@@ -79,13 +79,17 @@ func _unhandled_input(event: InputEvent) -> void:
 
 # Called when a track's ring buffer becomes full and starts replaying
 func _on_loop_started(looping_track_idx: int) -> void:
-	# Only switch if it's from the active track
-	if looping_track_idx != active_track_idx:
-		return
-	# Compute next track index (wraps around)
-		var next_idx = (active_track_idx + 1) % tracks.size()
-		# Switch control to the next track while keeping previous tracks visible
-		activate_track(next_idx)
+        # Only switch if it's from the active track
+        if looping_track_idx != active_track_idx:
+                return
+        # Compute next track index (wraps around)
+                var next_idx = (active_track_idx + 1) % tracks.size()
+                # Switch control to the next track while keeping previous tracks visible
+                activate_track(next_idx)
+
+                var em = get_tree().get_first_node_in_group("enemy_manager")
+                if em:
+                        em.reset_enemies()
 
 # 
 # Enable input on the chosen track, disable on the others
