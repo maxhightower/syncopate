@@ -65,7 +65,8 @@ func _ready() -> void:
 
 func _unhandled_input(event: InputEvent) -> void:
 	# Speed up/slow down tick rate with C and Z (Godot 4.x compatible)
-		if event is InputEventKey and event.pressed and not event.echo:
+		if event is InputEventKey and not event.echo:
+			if event.pressed:
 				if event.keycode == KEY_Z:
 						Engine.time_scale = max(0.1, Engine.time_scale - 0.5)
 						print("[PlayerManager] Slowed time_scale to ", Engine.time_scale)
@@ -81,6 +82,30 @@ func _unhandled_input(event: InputEvent) -> void:
 						print("[PlayerManager] Sped up time_scale to ", Engine.time_scale)
 						if cassette_ui:
 								cassette_ui.update_speed_modifier_label()
+				elif event.keycode == KEY_Q:
+					# start the rewind
+					if active_track_idx >= 0 and active_track_idx < tracks.size():
+						var player = tracks[active_track_idx]
+						if player.has_method("start_rewind"):
+							player.start_rewind()
+				elif event.keycode == KEY_E:
+					# start fast forward
+					if active_track_idx >= 0 and active_track_idx < tracks.size():
+						var player = tracks[active_track_idx]
+						if player.has_method("stop_fast_forward"):
+							player.stop_fast_forward()
+			else:
+				# Key released
+				if event.keycode == KEY_Q:
+					if active_track_idx >= 0 and active_track_idx < tracks.size():
+						var player = tracks[active_track_idx]
+						if player.has_method("stop_rewind"):
+							player.stop_rewind()
+				elif event.keycode == KEY_E:
+					if active_track_idx >= 0 and active_track_idx < tracks.size():
+						var player = tracks[active_track_idx]
+						if player.has_method("stop_fast_forward"):
+							player.stop_fast_forward()
 		# Forward input to active track
 		if active_track_idx >= 0 and active_track_idx < tracks.size():
 				tracks[active_track_idx]._unhandled_input(event)

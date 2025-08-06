@@ -456,6 +456,36 @@ func print_buffer_status():
 		for action in input_buffers.keys():
 			print("  ", action.capitalize(), ": ", input_buffers[action], "s remaining")
 
+
+
+# Rewind Replay System
+func start_rewind() -> void:
+	"""
+	Begin rewinding the player's recorded path. This will set the player into replay mode and
+	move backward through the ring buffer each physics frame.
+	"""
+	if track1.length == 0:
+		return
+	is_replaying = true
+	# Start from the most recent tick
+	track_replay_index = (track1.length - 1) if track1.length > 0 else 0
+	set_physics_process(true)
+
+func stop_rewind() -> void:
+	"""
+	Stop rewinding and return to normal control.
+	"""
+	is_replaying = false
+	set_physics_process(true)
+
+
+
+
+
+
+
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # ACTION CANCELLATION SYSTEM
 # ═══════════════════════════════════════════════════════════════════════════════
