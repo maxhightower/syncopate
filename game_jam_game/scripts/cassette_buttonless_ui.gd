@@ -136,11 +136,11 @@ func get_max_health() -> int:
 	return max_health
 
 func is_alive() -> bool:
-                """Check if player is still alive"""
-                return health_per_track.get(current_track, max_health) > 0
+				"""Check if player is still alive"""
+				return health_per_track.get(current_track, max_health) > 0
 
 func update_speed_modifier_label() -> void:
-        speed_modifier_label.text = "%0.1fx" % Engine.time_scale
+		speed_modifier_label.text = "%0.1fx" % Engine.time_scale
 
 func _ready():
 	# Store original positions for animation
@@ -197,9 +197,9 @@ func _ready():
 	current_track = 0
 	switch_to_track(1)
 	
-        # Drop red button by default when game starts
-        _drop_red_button()
-        update_speed_modifier_label()
+	# Drop red button by default when game starts
+	_drop_red_button()
+	update_speed_modifier_label()
 
 func _store_button_positions():
 	button_original_positions.clear()
