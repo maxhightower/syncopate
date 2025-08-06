@@ -151,10 +151,21 @@ func _physics_process(delta: float) -> void:
 		if track1.length == 0:
 			return
 		var tick = track1.get_at(track_replay_index)
-		self.position = tick.position
-		self.velocity = tick.velocity
-		self.input_just_pressed = tick.input
-		track_replay_index = (track_replay_index + 1) % track1.length
+		if tick:
+			self.position = tick.position
+			self.velocity = tick.velocity
+			self.input_just_pressed = tick.input
+			# update the cassette player
+			if has_node("../CassetteButtonlessUI"):
+				var ui = get_node("../CassetteButtonlessUI")
+				if ui.has_method("set_progress"):
+					# Assume tick["seconds"] is the time at this tick, and UI expects 0..1
+					var progress = float(track_replay_index) / float(track1.length - 1) if track1.length > 1 else 0.0
+					ui.set_progress(progress)
+		# Move backward, wrap around if needed
+		track_replay_index -= 1
+		if track_replay_index < 0:
+			track_replay_index = track1.length - 1
 		return
 	else:
 		track1.push({
@@ -463,6 +474,7 @@ func start_rewind() -> void:
 	"""
 	Begin rewinding the player's recorded path. This will set the player into replay mode and
 	move backward through the ring buffer each physics frame.
+	Also triggers enemy rewind if present.
 	"""
 	if track1.length == 0:
 		return
@@ -471,12 +483,23 @@ func start_rewind() -> void:
 	track_replay_index = (track1.length - 1) if track1.length > 0 else 0
 	set_physics_process(true)
 
+	# Trigger enemy rewind if enemy exists and has start_rewind
+	var enemy = get_tree().get_first_node_in_group("enemy")
+	if enemy and enemy.has_method("start_rewind"):
+		enemy.start_rewind()
+
 func stop_rewind() -> void:
 	"""
 	Stop rewinding and return to normal control.
+	Also stops enemy rewind if present.
 	"""
 	is_replaying = false
 	set_physics_process(true)
+
+	# Stop enemy rewind if enemy exists and has stop_rewind
+	var enemy = get_tree().get_first_node_in_group("enemy")
+	if enemy and enemy.has_method("stop_rewind"):
+		enemy.stop_rewind()
 
 
 

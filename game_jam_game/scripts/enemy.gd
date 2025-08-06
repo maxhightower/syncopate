@@ -1,4 +1,12 @@
 extends CharacterBody2D
+## REWIND SYSTEM (sync with player)
+# -- Set up ring buffer for enemy -- #
+@onready var track1: RingBuffer = RingBuffer.create_by_seconds(15, Engine.get_physics_ticks_per_second())
+var is_replaying: bool = false
+var track_replay_index: int = 0
+var loop_triggered: bool = false
+
+
 
 @onready var animation_player := $AnimationPlayer
 @onready var sprite := $Sprite2D
@@ -133,7 +141,7 @@ var decision_tree: DecisionTreeNode
 
 func _ready():
 	# Add the enemy to a group so other systems can find it
-	add_to_group("enemies")
+	add_to_group("enemy")
 	current_health = max_health
 	patrol_start_position = global_position
 	
@@ -433,65 +441,37 @@ func set_passive_body_damage_enabled(enabled: bool):
 			print("Enemy passive body damage ", "enabled" if enabled else "disabled")
 
 func _physics_process(delta):
+	# REWIND SYSTEM
+	if is_replaying:
+		if track1.length == 0:
+			return
+		var tick = track1.get_at(track_replay_index)
+		if tick:
+			self.position = tick.position
+			self.velocity = tick.velocity
+		# Move backward, wrap around if needed
+		track_replay_index -= 1
+		if track_replay_index < 0:
+			track_replay_index = track1.length - 1
+		return
+
+	# Record enemy state to buffer (only if not rewinding)
+	track1.push({
+		"position": self.position,
+		"velocity": self.velocity
+	})
+
+	# Normal enemy update and movement code
 	# Update spawn invincibility timer
 	if is_spawn_invincible:
 		spawn_invincibility_timer -= delta
 		if spawn_invincibility_timer <= 0.0:
 			is_spawn_invincible = false
 			print("Enemy spawn invincibility ended")
-	
-	# Update attack timer
-	if attack_timer > 0:
-		attack_timer -= delta
-	
-	# Update attack state timer
-	if attack_state_timer > 0:
-		attack_state_timer -= delta
-	
-	# Update jump timer
-	if jump_timer > 0:
-		jump_timer -= delta
-	
-	# Update passive damage timer
-	if passive_damage_timer > 0:
-		passive_damage_timer -= delta
-	
-	# Update sight check timer
-	if sight_check_timer > 0:
-		sight_check_timer -= delta
-	
-	# Update pathfinding timers and progress tracking
-	distance_check_timer += delta
-	if distance_check_timer >= 1.0:  # Check progress every second
-		distance_check_timer = 0.0
-		if player and current_state == EnemyState.CHASE:
-			var current_distance = global_position.distance_to(player.global_position)
-			
-			# Check if we're making progress toward the player
-			if last_distance_to_player > 0:
-				var progress = last_distance_to_player - current_distance
-				if progress < 10.0:  # If we haven't gotten 10 pixels closer
-					stuck_timer += 1.0
-					print("Enemy making little progress - stuck timer: ", stuck_timer)
-				else:
-					stuck_timer = max(0, stuck_timer - 0.5)  # Reduce stuck timer if making progress
-					failed_jump_attempts = 0  # Reset failed jumps if making progress
-			
-			last_distance_to_player = current_distance
-	
-	# Update alternate search timer
-	if current_state == EnemyState.SEARCH_ALTERNATE_PATH:
-		alternate_search_timer += delta
-	
-	# Debug output (more frequent for better visibility)
-	if randf() < 0.05:  # 5% chance each frame to see debug info more often
-		print("Enemy Debug - Position: ", global_position, " | Velocity: ", velocity.round(), " | On floor: ", is_on_floor(), " | State: ", get_current_state_name(), " | Player found: ", player != null)
-		if player:
-			print("  Distance to player: ", global_position.distance_to(player.global_position))
-	
+
 	# AI behavior based on current state
 	update_ai_behavior(delta)
-	
+
 	# Apply friction/air resistance only if not actively moving
 	var is_actively_moving = false
 	match current_state:
@@ -499,7 +479,7 @@ func _physics_process(delta):
 			is_actively_moving = true
 		EnemyState.ATTACK:
 			is_actively_moving = false
-	
+
 	# Only apply friction when not actively trying to move
 	if not is_actively_moving:
 		if is_on_floor():
@@ -510,47 +490,47 @@ func _physics_process(delta):
 		else:
 			# Air resistance
 			velocity.x *= air_friction
-	
+
 	# Apply gravity if not on floor (using player's gravity scale system)
 	if not is_on_floor():
-		# Determine gravity scale and terminal velocity based on falling behavior
-		# Uses same gravity values as player for consistent physics:
-		# - Base gravity: 980.0 (from ProjectSettings) 
-		# - Gravity scale: 20.0 (same as player's normal fall)
-		# - Terminal velocity: 3000.0 (same as player)
 		var gravity_scale = fall_gravity_scale
 		var max_fall_velocity = terminal_velocity
-		
-		# Apply gravity with scale and clamp to terminal velocity (identical to player fall state)
 		velocity.y = min(
 			velocity.y + gravity * gravity_scale * delta,
 			max_fall_velocity
 		)
-	
+
 	# Check for and resolve horizontal collisions to prevent getting jammed
 	if is_on_wall():
-		# Detect if enemy is penetrating into wall geometry
 		var collision_info = move_and_collide(Vector2.ZERO, true)
 		if collision_info:
 			var penetration_depth = collision_info.get_travel().length()
 			if penetration_depth > max_horizontal_penetration:
-				# Push enemy away from wall to prevent jamming
 				var push_direction = collision_info.get_normal()
 				global_position += push_direction * (collision_safety_margin + penetration_depth)
-				velocity.x *= 0.5  # Reduce horizontal velocity to prevent bouncing
-				if randf() < 0.1:  # Occasional debug for wall collisions
+				velocity.x *= 0.5
+				if randf() < 0.1:
 					print("Enemy pushed away from wall, penetration: ", penetration_depth)
-	
+
 	# Apply the movement
 	move_and_slide()
-	
+
 	# Additional safety check: if enemy is still overlapping significantly, move it out
 	if get_slide_collision_count() > 0:
 		for i in get_slide_collision_count():
 			var collision = get_slide_collision(i)
 			if collision and collision.get_travel().length() > max_horizontal_penetration:
-				# Force push away from collision
 				global_position += collision.get_normal() * collision_safety_margin
+# Start rewinding the enemy's recorded path
+func start_rewind() -> void:
+	if track1.length == 0:
+		return
+	is_replaying = true
+	track_replay_index = (track1.length - 1) if track1.length > 0 else 0
+
+# Stop rewinding and return to normal control
+func stop_rewind() -> void:
+	is_replaying = false
 
 # AI Behavior System (Decision Tree Based)
 func update_ai_behavior(delta: float):
