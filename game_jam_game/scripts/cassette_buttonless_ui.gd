@@ -720,17 +720,12 @@ func _initialize_health_per_track():
 func switch_to_track(track_number: int):
 		"""Switch to a different track, saving current progress and loading new track's progress"""
 		if track_number < 1 or track_number > 4:
-				print("Invalid track number: ", track_number)
-				return
+			print("Invalid track number: ", track_number)
+			return
 
 		if current_track == track_number:
-			_connect_to_active_player()
-			_update_hearts_display()
-			_update_timer_display()
-			_update_progress_bar()
-			if not is_timer_running and timer_per_track[current_track] > 0:
-				start_timer()
-				return
+			# Do nothing if the requested track is already active
+			return
 
 		var old_track = current_track
 			
