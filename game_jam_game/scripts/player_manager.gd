@@ -65,16 +65,20 @@ func _ready() -> void:
 
 func _unhandled_input(event: InputEvent) -> void:
 	# Speed up/slow down tick rate with C and Z (Godot 4.x compatible)
-	if event is InputEventKey and event.pressed and not event.echo:
-		if event.keycode == KEY_Z:
-			Engine.time_scale = max(0.1, Engine.time_scale - 0.5)
-			print("[PlayerManager] Slowed time_scale to ", Engine.time_scale)
-		elif event.keycode == KEY_C:
-			Engine.time_scale = Engine.time_scale + 0.5
-			print("[PlayerManager] Sped up time_scale to ", Engine.time_scale)
-	# Forward input to active track
-	if active_track_idx >= 0 and active_track_idx < tracks.size():
-		tracks[active_track_idx]._unhandled_input(event)
+        if event is InputEventKey and event.pressed and not event.echo:
+                if event.keycode == KEY_Z:
+                        Engine.time_scale = max(0.1, Engine.time_scale - 0.5)
+                        print("[PlayerManager] Slowed time_scale to ", Engine.time_scale)
+                        if cassette_ui:
+                                cassette_ui.update_speed_modifier_label()
+                elif event.keycode == KEY_C:
+                        Engine.time_scale = Engine.time_scale + 0.5
+                        print("[PlayerManager] Sped up time_scale to ", Engine.time_scale)
+                        if cassette_ui:
+                                cassette_ui.update_speed_modifier_label()
+        # Forward input to active track
+        if active_track_idx >= 0 and active_track_idx < tracks.size():
+                tracks[active_track_idx]._unhandled_input(event)
 
 
 # Called when a track's ring buffer becomes full and starts replaying
@@ -90,13 +94,17 @@ func _on_loop_started(looping_track_idx: int) -> void:
 # 
 # Enable input on the chosen track, disable on the others
 func activate_track(idx: int) -> void:
-	# Check if we're already on this track to prevent unnecessary work
-	if active_track_idx == idx:
-		return
+        # Check if we're already on this track to prevent unnecessary work
+        if active_track_idx == idx:
+                return
 
-	# Move the new active player to the spawn point
-	if idx >= 0 and idx < tracks.size():
-		tracks[idx].global_position = spawn_point
+        Engine.time_scale = 1.0
+        if cassette_ui:
+                cassette_ui.update_speed_modifier_label()
+
+        # Move the new active player to the spawn point
+        if idx >= 0 and idx < tracks.size():
+                tracks[idx].global_position = spawn_point
 
 	for i in range(tracks.size()):
 		var is_active := i == idx
