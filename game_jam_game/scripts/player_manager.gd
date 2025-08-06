@@ -166,6 +166,11 @@ func activate_track(idx: int) -> void:
 			cassette_ui.current_track = expected_ui_track
 			cassette_ui._update_timer_display()
 			cassette_ui._update_progress_bar()
+	# Ensure enemies reflect recorded deaths for the active track
+	var enemy_manager = EnemyManager.get_manager()
+	if enemy_manager:
+		enemy_manager.reset_enemies(idx)
+
 
 # Find and connect to the UI
 func _find_and_connect_ui() -> void:
