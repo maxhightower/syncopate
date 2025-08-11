@@ -1,8 +1,11 @@
+
 class_name HitBox
 
 extends Area2D
 
 @export var damage := 1
+# Reference to the owner of this hitbox (the entity that created it)
+@export var hitbox_owner: Node = null
 @export var knockback_multiplier: float = 400.0
 
 # Different knockback multipliers for different attack types
@@ -16,6 +19,10 @@ func _ready() -> void:
 	collision_layer = 4
 	collision_mask = 0
 	collision_shape_2d.disabled = true
+
+	# Try to auto-assign hitbox_owner if not set
+	if hitbox_owner == null and get_parent():
+		hitbox_owner = get_parent()
 
 # Get the current knockback multiplier based on the active attack
 func get_current_knockback_multiplier() -> float:

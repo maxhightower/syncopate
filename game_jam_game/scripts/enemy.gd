@@ -6,6 +6,12 @@ var is_replaying: bool = false
 var track_replay_index: int = 0
 var loop_triggered: bool = false
 
+# Ghost system
+var is_ghost_mode: bool = false
+var echo_ghost_dead: bool = false
+@export var dead_ghost_color_tint: Color = Color(0.3, 0.3, 0.3, 0.22)
+@export var live_ghost_color_tint: Color = Color(0.6, 0.6, 1.0, 0.55)
+
 
 
 @onready var animation_player := $AnimationPlayer
@@ -103,10 +109,15 @@ var alternate_search_timer: float = 0.0  # How long to search for alternate path
 var alternate_search_duration: float = 5.0  # Seconds to search before giving up
 var original_chase_direction: int = 1  # Remember original chase direction
 
+# Targeting behavior options
+enum TargetMode { ACTIVE_ONLY, NEAREST_PLAYER }
+@export var target_mode: TargetMode = TargetMode.ACTIVE_ONLY
+@export var ignore_ghost_players: bool = true
+
 # Decision Tree System
 class DecisionTreeNode extends RefCounted:
 	"""Base class for all decision tree nodes"""
-	func evaluate(enemy) -> String:
+	func evaluate(_enemy) -> String:
 		return "default"
 
 class ConditionNode extends DecisionTreeNode:
@@ -133,7 +144,7 @@ class ActionNode extends DecisionTreeNode:
 	func _init(action: String):
 		action_name = action
 	
-	func evaluate(enemy) -> String:
+	func evaluate(_enemy) -> String:
 		return action_name
 
 # Decision Tree Instance
@@ -142,6 +153,9 @@ var decision_tree: DecisionTreeNode
 func _ready():
 	# Add the enemy to a group so other systems can find it
 	add_to_group("enemy")
+	add_to_group("enemies")
+	is_ghost_mode = false
+	echo_ghost_dead = false
 	current_health = max_health
 	patrol_start_position = global_position
 	
@@ -161,22 +175,23 @@ func _ready():
 	# Enable the passive body hitbox
 	_setup_passive_body_hitbox()
 	
-	# Find the player (assuming there's only one player in the scene)
-	# Try multiple approaches to find the player
-	var players = get_tree().get_nodes_in_group("player")
-	if players.size() > 0:
-		player = players[0]
-		print("Enemy found player: ", player.name)
-	else:
-		print("Warning: No player found in 'player' group. Searching for Player node...")
-		# Search the scene tree for a Player node
-		var scene_root = get_tree().current_scene
-		if scene_root:
-			player = _find_player_recursive(scene_root)
-			if player:
-				print("Enemy found player by search: ", player.name)
-			else:
-				print("Warning: No player found! Enemy will only patrol.")
+	# Resolve the active player from the PlayerManager first; fallback to group/search
+	_resolve_active_player()
+	if not player:
+		var players = get_tree().get_nodes_in_group("player")
+		if players.size() > 0:
+			player = players[0]
+			print("Enemy found player (fallback): ", player.name)
+		else:
+			print("Warning: No player found in 'player' group. Searching for Player node...")
+			# Search the scene tree for a Player node
+			var scene_root = get_tree().current_scene
+			if scene_root:
+				player = _find_player_recursive(scene_root)
+				if player:
+					print("Enemy found player by search: ", player.name)
+				else:
+					print("Warning: No player found! Enemy will only patrol.")
 	
 	print("Enemy _ready() called - Health: ", current_health)
 	print("Enemy position: ", global_position)
@@ -186,9 +201,90 @@ func _ready():
 	# Build the decision tree
 	_build_decision_tree()
 
+# Start a fresh 15s live take for the enemy (clear loop/buffer and reset AI timers)
+func begin_live_take() -> void:
+	is_replaying = false
+	track1.clear()
+	track_replay_index = 0
+	loop_triggered = false
+	# Reset transient timers/state
+	attack_timer = 0.0
+	attack_state_timer = 0.0
+	passive_damage_timer = 0.0
+	jump_timer = 0.0
+	stuck_timer = 0.0
+	failed_jump_attempts = 0
+	alternate_search_timer = 0.0
+	# Return to baseline behavior
+	current_state = EnemyState.PATROL
+	is_ghost_mode = false
+	echo_ghost_dead = false
+	if sprite:
+		sprite.modulate = Color(1,1,1,1)
+# Set ghost mode (echo ghost for inactive tracks)
+func set_ghost_mode(ghost: bool) -> void:
+	is_ghost_mode = ghost
+	if not ghost:
+		echo_ghost_dead = false
+		if sprite:
+			sprite.modulate = Color(1,1,1,1)
+# Echo ghost playback for inactive tracks
+func ghost_playback_at(local_time: float) -> void:
+	if track1.length == 0:
+		return
+	var tps = int(max(1, Engine.get_physics_ticks_per_second()))
+	var duration = float(track1.buffer_size) / float(tps)
+	if duration <= 0.0:
+		return
+	var frame = int(floor(clamp(local_time, 0.0, max(0.0, duration - (1.0 / float(tps)))) * float(tps)))
+	frame = clamp(frame, 0, max(0, track1.length - 1))
+	var tick = track1.get_at(frame)
+	if tick == null:
+		return
+	position = tick.position
+	velocity = tick.velocity
+	# Dead/alive ghost visual
+	var recorded_health = tick.health if tick.has("health") else 1
+	echo_ghost_dead = recorded_health <= 0
+	if sprite:
+		if echo_ghost_dead:
+			sprite.modulate = dead_ghost_color_tint
+		else:
+			sprite.modulate = live_ghost_color_tint
+
+# Alias for clarity
+func restart_loop() -> void:
+	begin_live_take()
+
 func reset_to_spawn() -> void:
 		global_position = patrol_start_position
 		velocity = Vector2.ZERO
+
+# Ensure the enemy tracks the currently active player across track switches
+func _resolve_active_player() -> void:
+	var pm = get_tree().get_first_node_in_group("player_manager")
+	if pm and pm.tracks.size() > 0:
+		# Always target the player on track 1, regardless of active track
+		player = pm.tracks[0]
+
+# Resolve target according to configured mode
+func _resolve_target_player() -> void:
+	match target_mode:
+		TargetMode.ACTIVE_ONLY:
+			_resolve_active_player()
+		TargetMode.NEAREST_PLAYER:
+			var candidates = get_tree().get_nodes_in_group("player")
+			var best: CharacterBody2D = null
+			var best_dist := INF
+			for p in candidates:
+				if ignore_ghost_players and p.has_method("is_in_ghost_mode") and p.is_in_ghost_mode():
+					continue
+				var d = global_position.distance_to(p.global_position)
+				if d < best_dist:
+					best = p
+					best_dist = d
+			if best:
+				player = best
 
 # Recursive function to find player
 func _find_player_recursive(node: Node) -> CharacterBody2D:
@@ -239,7 +335,7 @@ func _build_decision_tree():
 	)
 	
 	# Level 4: Continue chase vs return
-	var continue_vs_return = ConditionNode.new(
+	var _continue_vs_return = ConditionNode.new(
 		_should_continue_chase,
 		stuck_check,  # Use smart pathfinding when chasing
 		return_action
@@ -266,11 +362,11 @@ func _build_decision_tree():
 	print("Decision tree built successfully with smart pathfinding behavior")
 
 # Decision Tree Condition Functions
-func _player_exists(enemy) -> bool:
+func _player_exists(_enemy) -> bool:
 	"""Check if player reference exists and is valid"""
 	return player != null and is_instance_valid(player)
 
-func _can_detect_player(enemy) -> bool:
+func _can_detect_player(_enemy) -> bool:
 	"""Check if enemy can detect the player (sight or proximity)"""
 	if not player:
 		return false
@@ -288,7 +384,7 @@ func _can_detect_player(enemy) -> bool:
 	
 	return false
 
-func _should_jump_to_player(enemy) -> bool:
+func _should_jump_to_player(_enemy) -> bool:
 	"""Check if enemy should jump up to reach player on a higher platform"""
 	if not player or jump_timer > 0 or not is_on_floor():
 		if randf() < 0.1:  # Debug output
@@ -331,7 +427,7 @@ func _should_jump_to_player(enemy) -> bool:
 	
 	return false
 
-func _is_in_attack_range(enemy) -> bool:
+func _is_in_attack_range(_enemy) -> bool:
 	"""Check if player is within attack range and attack is ready"""
 	if not player:
 		return false
@@ -339,7 +435,7 @@ func _is_in_attack_range(enemy) -> bool:
 	var distance = global_position.distance_to(player.global_position)
 	return distance <= attack_range and attack_timer <= 0
 
-func _should_continue_chase(enemy) -> bool:
+func _should_continue_chase(_enemy) -> bool:
 	"""Check if enemy should continue chasing or return to patrol"""
 	if not player:
 		return false
@@ -347,12 +443,12 @@ func _should_continue_chase(enemy) -> bool:
 	var distance = global_position.distance_to(player.global_position)
 	return distance <= return_to_patrol_range
 
-func _should_return_to_patrol(enemy) -> bool:
+func _should_return_to_patrol(_enemy) -> bool:
 	"""Check if enemy should return to patrol area"""
 	var distance_to_start = global_position.distance_to(patrol_start_position)
 	return distance_to_start > 50.0  # If far from patrol start, return
 
-func _should_search_alternate_path(enemy) -> bool:
+func _should_search_alternate_path(_enemy) -> bool:
 	"""Check if enemy should search for alternate path to reach player"""
 	if not player or current_state != EnemyState.CHASE:
 		return false
@@ -390,7 +486,7 @@ func debug_decision_tree():
 	print("==========================")
 
 # Decision Tree Expansion Functions
-func add_new_behavior(condition_name: String, condition_func: Callable, action_name: String):
+func add_new_behavior(condition_name: String, _condition_func: Callable, action_name: String):
 	"""Add a new behavior branch to the decision tree"""
 	# This is a simplified example - in practice you'd rebuild the tree
 	# or have a more sophisticated tree modification system
@@ -441,6 +537,13 @@ func set_passive_body_damage_enabled(enabled: bool):
 			print("Enemy passive body damage ", "enabled" if enabled else "disabled")
 
 func _physics_process(delta):
+	# Ghost mode: echo ghosts are sampled externally, skip normal logic
+	if is_ghost_mode:
+		return
+
+	# Refresh target selection according to configured targeting mode
+	_resolve_target_player()
+
 	# REWIND SYSTEM
 	if is_replaying:
 		if track1.length == 0:
@@ -452,13 +555,16 @@ func _physics_process(delta):
 		# Move backward, wrap around if needed
 		track_replay_index -= 1
 		if track_replay_index < 0:
-			track_replay_index = track1.length - 1
+			# Clamp at beginning and stop rewinding to avoid looping
+			track_replay_index = 0
+			stop_rewind()
 		return
 
 	# Record enemy state to buffer (only if not rewinding)
 	track1.push({
 		"position": self.position,
-		"velocity": self.velocity
+		"velocity": self.velocity,
+		"health": current_health
 	})
 
 	# Normal enemy update and movement code
@@ -533,7 +639,7 @@ func stop_rewind() -> void:
 	is_replaying = false
 
 # AI Behavior System (Decision Tree Based)
-func update_ai_behavior(delta: float):
+func update_ai_behavior(_delta: float):
 	# Re-try finding player if we don't have one
 	if not player or not is_instance_valid(player):
 		_try_find_player()
@@ -659,10 +765,10 @@ func patrol_behavior():
 func chase_behavior():
 	# Move towards the player
 	var direction_to_player = (player.global_position - global_position).normalized()
-	var chase_direction = 1 if direction_to_player.x > 0 else -1
+	var _chase_direction = 1 if direction_to_player.x > 0 else -1
 	
 	# Check if enemy should jump while chasing
-	if should_jump(chase_direction):
+	if should_jump(_chase_direction):
 		perform_jump()
 	
 	velocity.x = direction_to_player.x * move_speed * 2.5  # Move much faster when chasing (increased from 1.8)
@@ -677,7 +783,7 @@ func jump_to_player_behavior():
 	
 	# Move towards the player horizontally
 	var direction_to_player = (player.global_position - global_position).normalized()
-	var chase_direction = 1 if direction_to_player.x > 0 else -1
+	var _chase_direction = 1 if direction_to_player.x > 0 else -1
 	
 	# Move horizontally towards player position
 	velocity.x = direction_to_player.x * move_speed * 1.5  # Moderate speed while positioning
@@ -1050,6 +1156,11 @@ func take_damage(damage_amount: int) -> void:
 
 func die():
 	print("Enemy defeated!")
+	# Record earliest kill into the combat registry with PlayerManager's global time
+	var pm = get_tree().get_first_node_in_group("player_manager")
+	var registry = get_tree().get_first_node_in_group("combat_registry")
+	if pm and registry and registry.has_method("record_kill"):
+		registry.record_kill(self, pm.global_time)
 	# You can add death effects here (particles, sound, etc.)
 	queue_free()
 

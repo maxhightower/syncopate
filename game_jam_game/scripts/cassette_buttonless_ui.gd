@@ -30,7 +30,7 @@ var player_manager: Node = null
 var active_track: int = 1
 
 # UI state
-var is_visible: bool = true
+var ui_visible: bool = true
 var slide_tween: Tween
 var original_position: Vector2
 var hidden_position: Vector2
@@ -62,6 +62,7 @@ const BUTTON_ANIM_DURATION: float = 0.3
 # Timer variables
 var countdown_time: float = 15.0  # 15 seconds
 var is_timer_running: bool = false
+var is_timer_rewinding: bool = false
 
 # Multi-track timer system
 var timer_per_track: Dictionary = {}  # Stores time remaining for each track
@@ -166,7 +167,7 @@ func _ready():
 	# Start hidden
 	position = hidden_position
 	visible = true  # Keep visible for animations, but positioned off-screen
-	is_visible = true
+	ui_visible = true
 	
 	# Find player
 	_find_player()
@@ -212,17 +213,17 @@ func _input(event):
 	# Handle UI toggle
 	if event.is_action_pressed("toggle_cassette_ui") or (event is InputEventKey and event.pressed and event.keycode == KEY_TAB):
 		toggle_visibility()
-		#print("UI toggled, is_visible: ", is_visible)
+		#print("UI toggled, visible: ", ui_visible)
 	
 	# Handle button animations when UI is visible
-	#if not is_visible:
+	#if not ui_visible:
 		#if event is InputEventKey and event.pressed and event.keycode == KEY_1:
-	#		print("Key 1 pressed but UI is not visible (is_visible: ", is_visible, ")")
+	#		print("Key 1 pressed but UI is not visible (visible: ", ui_visible, ")")
 	#	return
 		
 	if event is InputEventKey and event.pressed:
 		var key_code = event.keycode
-		#print("Input received, key: ", key_code, ", UI visible: ", is_visible)
+		#print("Input received, key: ", key_code, ", UI visible: ", ui_visible)
 		match key_code:
 			KEY_1:
 				#print("Key 1 pressed - Switching to track 1 (Red)")
@@ -538,21 +539,21 @@ func update_track_display_only(track_number: int):
 			_set_only_button_dropped("green")
 
 func toggle_visibility():
-	is_visible = !is_visible
+	ui_visible = !ui_visible
 	_animate_slide()
-	ui_toggled.emit(is_visible)
+	ui_toggled.emit(ui_visible)
 
 func show_ui():
-	if not is_visible:
-		is_visible = true
+	if not ui_visible:
+		ui_visible = true
 		_animate_slide()
-		ui_toggled.emit(is_visible)
+		ui_toggled.emit(ui_visible)
 
 func hide_ui():
-	if is_visible:
-		is_visible = false
+	if ui_visible:
+		ui_visible = false
 		_animate_slide()
-		ui_toggled.emit(is_visible)
+		ui_toggled.emit(ui_visible)
 
 func _animate_slide():
 	# Kill existing tween
@@ -563,7 +564,7 @@ func _animate_slide():
 	slide_tween.set_ease(SLIDE_EASE_TYPE)
 	slide_tween.set_trans(SLIDE_TRANS_TYPE)
 	
-	var target_position = original_position if is_visible else hidden_position
+	var target_position = original_position if ui_visible else hidden_position
 	slide_tween.tween_property(self, "position", target_position, SLIDE_DURATION)
 
 # Simplified display update since this is just button UI
@@ -582,12 +583,25 @@ func start_timer():
 	else:
 		print("Error: TimerLabel not found! Cannot start timer.")
 
+func start_rewind_timer():
+	"""Begin rewinding the current track's timer (counts up towards default)."""
+	is_timer_rewinding = true
+
+func stop_rewind_timer():
+	"""Stop rewinding the track timer; resume normal countdown if running."""
+	is_timer_rewinding = false
+
 func _process(delta):
 	"""Update timer each frame"""
 	if is_timer_running:
 		# Ensure the current track has a timer entry to avoid out-of-bounds errors
 		var time_left = timer_per_track.get(current_track, default_track_time)
-		time_left -= delta
+		if is_timer_rewinding:
+			# Rewind: increase remaining time, up to default_track_time
+			time_left = min(default_track_time, time_left + delta)
+		else:
+			# Normal countdown
+			time_left = max(0.0, time_left - delta)
 		timer_per_track[current_track] = time_left
 		_update_timer_display()
 		_update_progress_bar()
@@ -611,6 +625,10 @@ func _process(delta):
 			# Auto-progress to next track
 			_auto_progress_to_next_track()
 
+func set_progress(_progress: float) -> void:
+	"""Optional hook for external rewind progress (no-op for now)."""
+	pass
+
 func _auto_progress_to_next_track():
 	"""Automatically move to the next track when current one finishes"""
 	var next_track = current_track + 1
@@ -625,7 +643,7 @@ func _auto_progress_to_next_track():
 			switch_to_track(1)
 			return
 	
-	# Move to next track
+	# Move to next track in strict sequence
 	print("Auto-progressing from track ", current_track, " to track ", next_track)
 	switch_to_track(next_track)
 	
@@ -646,8 +664,8 @@ func _update_timer_display():
 
 		var time_left = timer_per_track.get(current_track, default_track_time)
 		# Convert to minutes and seconds
-		var minutes = int(time_left) / 60
-		var seconds = int(time_left) % 60
+		var minutes = int(floor(time_left / 60.0))
+		var seconds = int(floor(fmod(time_left, 60.0)))
 
 		# Format as MM:SS
 		var time_text = "%02d:%02d" % [minutes, seconds]
@@ -769,6 +787,17 @@ func switch_to_track(track_number: int):
 		_update_hearts_display()
 		_update_timer_display()
 		_update_progress_bar()
+
+		# Update button visuals to reflect the newly active track
+		match current_track:
+			1:
+				_set_only_button_dropped("red")
+			2:
+				_set_only_button_dropped("yellow")
+			3:
+				_set_only_button_dropped("blue")
+			4:
+				_set_only_button_dropped("green")
 
 		# Start timer if it wasn't running
 		if not is_timer_running and timer_per_track[current_track] > 0:
@@ -910,11 +939,14 @@ func animate_green_button():
 func set_player_reference(player_node: Node):
 	"""Set the player reference manually"""
 	player = player_node
-	print("CassetteButtonlessUI: Player reference set to ", player_node.name if player_node else "null")
+	var name_text := "null"
+	if player_node:
+		name_text = player_node.name
+	print("CassetteButtonlessUI: Player reference set to ", name_text)
 
 func is_ui_visible() -> bool:
 	"""Check if the UI is currently visible"""
-	return is_visible
+	return ui_visible
 
 func is_red_button_dropped() -> bool:
 	"""Check if red button is currently dropped"""
