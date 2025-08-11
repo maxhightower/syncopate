@@ -4,6 +4,7 @@ class_name Player
 # -- Set up ring buffer -- #
 @onready var track1: RingBuffer = RingBuffer.create_by_seconds(15, Engine.get_physics_ticks_per_second())
 var is_replaying: bool = false
+var is_rewinding: bool = false
 var track_replay_index: int = 0
 var loop_triggered: bool = false
 
@@ -19,6 +20,9 @@ var last_flip_h: bool = false
 var original_sword_position: Vector2
 var spawn_position: Vector2
 var total_time = 0.0
+
+# Ghost/timeline helpers
+var _ticks_per_second: int = 0
 
 
 # Input polling system - ensures inputs are only processed once per frame
@@ -65,8 +69,14 @@ func set_health(value: int) -> void:
 
 # Ghost mode system - when player dies, becomes a ghost until timer ends
 var is_ghost_mode: bool = false
+var ghost_is_spirit: bool = false  # True when player is dead but still controllable (no damage)
+var echo_ghost_dead: bool = false  # True when echo ghost playback represents a dead player at sampled time
 @export var ghost_transparency: float = 0.7  # How transparent the ghost appears (0.7 = dimmer but visible)
 @export var ghost_color_tint: Color = Color(0.6, 0.6, 1.0, 0.7)  # Slightly blue tint with reduced alpha
+# Color for dead echo ghosts (more grey and translucent)
+@export var dead_ghost_color_tint: Color = Color(0.3, 0.3, 0.3, 0.22)
+# Color for live echo ghosts (less translucent, blue)
+@export var live_ghost_color_tint: Color = Color(0.6, 0.6, 1.0, 0.55)
 
 # Invincibility frames system
 @export var invincibility_duration: float = 1.5  # Duration of invincibility after taking damage
@@ -100,6 +110,8 @@ var animation_cancel_enabled: bool = false     # Whether animation-based cancell
 func _ready() -> void:
 	# Initialize the state machine, passing a reference of the player to the states,
 	# that way they can move and react accordingly
+	# Ensure enemies and systems can find all player instances
+	add_to_group("player")
 	state_machine.init(self)
 	# store the sword position and direction
 	last_flip_h = animations.flip_h
@@ -115,9 +127,28 @@ func _ready() -> void:
 	
 	# Input buffer system is initialized automatically via Dictionary declarations
 	# No manual initialization needed for the generalized buffer system
+
+	# Cache ticks/s for sampling convenience
+	_ticks_per_second = int(max(1, Engine.get_physics_ticks_per_second()))
 	
 func set_total_time(time: float) -> void:
-	total_time = time
+		total_time = time
+
+func _pad_ring_buffer_to_full() -> void:
+	var rb := track1
+	if rb.length >= rb.buffer_size:
+		return
+	var last_tick = rb.get_latest()
+	if last_tick == null:
+		last_tick = {
+			"input": {},
+			"seconds": total_time,
+			"health": current_health,
+			"position": self.position,
+			"velocity": self.velocity
+		}
+	while rb.length < rb.buffer_size:
+		rb.push(last_tick)
 
 func reset_to_spawn() -> void:
 		global_position = spawn_position
@@ -125,6 +156,29 @@ func reset_to_spawn() -> void:
 		track1.clear()
 		track_replay_index = 0
 		is_replaying = false
+
+# Start a fresh 15s live take: clear tape and reset replay/ghost-related flags and input state
+func begin_live_take() -> void:
+	# Stop any rewind/replay state
+	is_rewinding = false
+	is_replaying = false
+	# Ensure this puppet is live (manager controls ghosting, but keep consistent)
+	is_ghost_mode = false
+	# Reset loop latch so a newly cleared tape won't instantly auto-advance
+	loop_triggered = false
+	# Clear recorded ticks
+	track1.clear()
+	track_replay_index = 0
+	# Flush any buffered inputs so the first live frame is clean
+	input_just_pressed.clear()
+	input_consumed.clear()
+	input_buffers.clear()
+	input_buffer_hold_times.clear()
+	last_buffer_times.clear()
+	for action in input_actions:
+		input_hold_start_times[action] = 0.0
+	# Ensure physics callbacks remain active for the live puppet
+	set_physics_process(true)
 
 func _unhandled_input(event: InputEvent) -> void:
 	
@@ -145,16 +199,40 @@ func _unhandled_input(event: InputEvent) -> void:
 	# Keep calling process_input for states that haven't been converted to polling yet
 	state_machine.process_input(event)
 
-func _physics_process(delta: float) -> void:
+func is_echo_ghost() -> bool:
+	return is_ghost_mode and not ghost_is_spirit
 
-	if is_replaying:
+func is_spirit_ghost() -> bool:
+	return is_ghost_mode and ghost_is_spirit
+
+# Is this ghost representing a dead state?
+func is_dead_ghost() -> bool:
+	return is_ghost_mode and (ghost_is_spirit or echo_ghost_dead)
+
+# Is this ghost representing an alive state?
+func is_alive_ghost() -> bool:
+	return is_ghost_mode and not is_dead_ghost()
+
+func _physics_process(delta: float) -> void:
+	# Always tick invincibility frames (even if ghost; visuals respect ghost mode)
+	update_invincibility(delta)
+	# Echo ghosts are driven externally; don't run physics/state while echo-ghosting
+	if is_echo_ghost() and not is_rewinding:
+		return
+
+	if is_rewinding:
 		if track1.length == 0:
 			return
 		var tick = track1.get_at(track_replay_index)
 		if tick:
 			self.position = tick.position
 			self.velocity = tick.velocity
-			self.input_just_pressed = tick.input
+			# Apply recorded inputs for visual correctness during rewind,
+			# but use a copy to avoid accidental shared mutations
+			if tick.input is Dictionary:
+				self.input_just_pressed = tick.input.duplicate(true)
+			else:
+				self.input_just_pressed = {}
 			# update the cassette player
 			if has_node("../CassetteButtonlessUI"):
 				var ui = get_node("../CassetteButtonlessUI")
@@ -165,27 +243,34 @@ func _physics_process(delta: float) -> void:
 		# Move backward, wrap around if needed
 		track_replay_index -= 1
 		if track_replay_index < 0:
-			track_replay_index = track1.length - 1
+			# Clamp at the earliest tick and stop rewinding to avoid looping
+			track_replay_index = 0
+			# At the very beginning, ensure no stale input is imposed
+			input_just_pressed.clear()
+			# Auto-stop rewind when we hit the beginning of the recording
+			stop_rewind()
+			# Inform PlayerManager to stop global time rewind mode
+			var pm = get_tree().get_first_node_in_group("player_manager")
+			if pm and pm.has_method("_stop_time_rewind"):
+				pm._stop_time_rewind()
 		return
 	else:
 		track1.push({
-			"input" : input_just_pressed,
+			"input" : (input_just_pressed.duplicate(true) if input_just_pressed else {}),
 			"seconds" : total_time,
 			"health" : current_health,  # Use actual current health
 			"position": self.position,
 			"velocity": self.velocity
 				})
 	
-	if track1.is_full() and not loop_triggered:
+	# Only signal loop start when not ghosting; dying pads the buffer to full
+	if track1.is_full() and not loop_triggered and not is_ghost_mode:
 		loop_triggered = true
 		emit_signal("loop_started")
-
-		# Update invincibility timer and flashing effect
-		update_invincibility(delta)
 	
-		# If in ghost mode, limit what systems update
-		if is_ghost_mode:
-			# Still apply gravity and basic physics so ghost doesn't float
+		# If in echo ghost mode, limit what systems update (spirit ghosts behave like live players)
+		if is_echo_ghost():
+			# Still apply gravity and basic physics so echo ghost doesn't float
 			if not is_on_floor():
 				velocity.y += get_gravity().y * delta
 				move_and_slide()
@@ -209,8 +294,9 @@ func _physics_process(delta: float) -> void:
 func buffer_jump():
 	buffer_input("jump")
 func _process(delta: float) -> void:
-	# Poll inputs first to ensure they're captured for this frame
-	poll_inputs()
+	# Poll inputs: allow for live and spirit ghosts; skip for echo ghosts
+	if not is_echo_ghost():
+		poll_inputs()
 	if is_replaying:
 		return
 
@@ -225,8 +311,8 @@ func _process(delta: float) -> void:
 # Input polling system - call this every frame to capture inputs
 func poll_inputs() -> void:
 	
-	# Don't poll inputs in ghost mode
-	if is_ghost_mode:
+	# Skip input polling for echo ghosts, but allow it for spirit ghosts
+	if is_echo_ghost():
 		input_just_pressed.clear()
 		input_consumed.clear()
 		return
@@ -284,7 +370,7 @@ func update_coyote_time(delta: float) -> void:
 	if currently_on_floor:
 		# Add motion blur effect for high-speed landings
 		if not was_on_floor :
-			var impact_intensity = clamp(abs(velocity.y) / 1200.0, 0.2, 0.8)
+			var _impact_intensity = clamp(abs(velocity.y) / 1200.0, 0.2, 0.8)
 		
 		# Reset timer and availability when on ground
 		coyote_timer = coyote_time_duration
@@ -320,12 +406,12 @@ func update_coyote_time(delta: float) -> void:
 	was_on_floor = currently_on_floor
 
 func can_coyote_jump() -> bool:
-	var can_jump = coyote_available and coyote_timer > 0.0
-	
-	if can_jump and not is_on_floor():
+	var can_coyote = coyote_available and coyote_timer > 0.0
+
+	if can_coyote and not is_on_floor():
 		print("Coyote time jump activated! Timer: ", coyote_timer)
-		
-	return can_jump
+	
+	return can_coyote
 
 
 # Check if player can perform a normal ground jump
@@ -479,6 +565,7 @@ func start_rewind() -> void:
 	if track1.length == 0:
 		return
 	is_replaying = true
+	is_rewinding = true
 	# Start from the most recent tick
 	track_replay_index = (track1.length - 1) if track1.length > 0 else 0
 	set_physics_process(true)
@@ -488,18 +575,44 @@ func start_rewind() -> void:
 	if enemy and enemy.has_method("start_rewind"):
 		enemy.start_rewind()
 
-func stop_rewind() -> void:
+func stop_rewind(commit: bool = false) -> void:
 	"""
 	Stop rewinding and return to normal control.
 	Also stops enemy rewind if present.
 	"""
 	is_replaying = false
+	is_rewinding = false
 	set_physics_process(true)
+
+	# If requested, truncate the recording up to the current rewind point
+	if commit:
+		_commit_rewind_state()
+
+	# Flush any potentially stale inputs/buffers captured during replay so
+	# no unintended actions trigger on the first live frame after rewind
+	input_just_pressed.clear()
+	input_consumed.clear()
+	input_buffers.clear()
+	input_buffer_hold_times.clear()
+	last_buffer_times.clear()
+	for action in input_actions:
+		input_hold_start_times[action] = 0.0
 
 	# Stop enemy rewind if enemy exists and has stop_rewind
 	var enemy = get_tree().get_first_node_in_group("enemy")
 	if enemy and enemy.has_method("stop_rewind"):
 		enemy.stop_rewind()
+
+func _commit_rewind_state() -> void:
+	"""Truncate the ring buffer to the current rewind index (inclusive)."""
+	if track1.length == 0:
+		return
+	var arr: Array = track1.duplicate()  # earliest -> latest
+	var keep_count: int = int(clamp(track_replay_index + 1, 0, track1.length))
+	# Rebuild the buffer with only the kept entries
+	track1.clear()
+	for i in range(keep_count):
+		track1.push(arr[i])
 
 
 
@@ -624,10 +737,19 @@ func apply_knockback(knockback_force: Vector2):
 		shake_camera_for_damage(damage_equivalent)
 		
 		# Add motion blur burst effect
-		var blur_intensity = clamp(knockback_magnitude / 400.0, 0.2, 0.8)
+		var _blur_intensity = clamp(knockback_magnitude / 400.0, 0.2, 0.8)
 
 	
 	print("Player received knockback: ", knockback_force, " | New velocity: ", velocity, " | On floor: ", is_on_floor())
+
+	# Apply a short lockout to switching after knockback
+	if not is_ghost_mode:
+		var mag = knockback_force.length()
+		var lockout = clamp(mag / 2000.0, 0.1, 0.35)
+		# store via input buffer dicts indirectly by timer
+		# reuse invincibility timers is not ideal; keep separate
+		# We'll piggyback on an optional field by setting a small timer via call_deferred
+		set_meta("switch_lockout_until", total_time + lockout)
 
 # Fast fall damage calculation
 func get_fast_fall_damage_multiplier() -> float:
@@ -737,9 +859,9 @@ func take_damage(damage_amount: int) -> void:
 	
 	if current_health <= 0:
 		return  # Player is already dead
-	
-		set_health(current_health - damage_amount)
-		print("Player took ", damage_amount, " damage! Health: ", current_health, "/", max_health)
+
+	set_health(current_health - damage_amount)
+	print("Player took ", damage_amount, " damage! Health: ", current_health, "/", max_health)
 	
 	# Start invincibility frames
 	start_invincibility()
@@ -757,22 +879,28 @@ func take_damage(damage_amount: int) -> void:
 func die() -> void:
 	"""Called when player health reaches 0"""
 	print("Player died! Entering ghost mode until timer ends...")
-	
-	# Instead of restarting the game, enter ghost mode
-	set_ghost_mode(true)
+	# Instead of restarting the game, enter controllable spirit mode (no damage)
+	# Keep position where the player died while track remains active
+	set_ghost_mode(true, true)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # GHOST MODE SYSTEM
 # ═══════════════════════════════════════════════════════════════════════════════
 
-func set_ghost_mode(ghost: bool) -> void:
+func set_ghost_mode(ghost: bool, as_spirit: bool = false) -> void:
 	"""Set the player's ghost mode state"""
+	ghost_is_spirit = ghost and as_spirit
+	if ghost:
+		# Ensure ghost playback has a full window, but suppress loop_started
+		_pad_ring_buffer_to_full()
+		loop_triggered = true
+		# Default echo state when entering ghost mode (will be updated by playback)
+		echo_ghost_dead = as_spirit  # spirit ghosts are always considered dead ghosts
+	# Always set flags according to requested state
 	is_ghost_mode = ghost
-	is_replaying = ghost
-	if is_replaying:
-		track_replay_index = 0
-	else:
+	if not ghost:
 		loop_triggered = false
+		echo_ghost_dead = false
 			
 	if is_ghost_mode:
 		print("Player entering ghost mode...")
@@ -786,13 +914,14 @@ func set_ghost_mode(ghost: bool) -> void:
 		collision_layer = 0  # Don't exist on any layer - enemies can't target
 		collision_mask = 1   # Still collide with ground/platforms for physics
 		
-		# Disable combat abilities - ghost can't deal damage
+		# Disable damage output: keep sword visuals for spirit, hide for echo
 		if sword:
-			sword.visible = false
-			# Also disable any hitboxes in the sword
+			# Spirit: visible and animates, Echo: hide
+			sword.visible = ghost_is_spirit or sword.visible
+			# Disable any hitboxes in the sword completely
 			var hitbox = sword.get_node_or_null("Sprite2D/HitBox")
 			if hitbox:
-				hitbox.set_collision_layer_value(3, false)  # Disable hitbox layer
+				hitbox.collision_layer = 0  # No collisions -> no damage
 		
 		# Disable hurtbox so ghost can't take damage from collisions
 		var hurtbox = get_node_or_null("HurtBox")
@@ -817,19 +946,83 @@ func set_ghost_mode(ghost: bool) -> void:
 			# Re-enable hitboxes in the sword
 			var hitbox = sword.get_node_or_null("Sprite2D/HitBox")
 			if hitbox:
-				hitbox.set_collision_layer_value(3, true)  # Re-enable hitbox layer
+				# Restore to default layer (3/4 mismatch can vary by setup; default to 4 used by HitBox)
+				hitbox.collision_layer = 4
 		
 		# Re-enable hurtbox for normal damage detection
 		var hurtbox = get_node_or_null("HurtBox")
 		if hurtbox:
 			hurtbox.collision_layer = 0  # HurtBox doesn't need to exist on any layer
 			hurtbox.collision_mask = 4   # Detect hitboxes on layer 3
-		
+
 		# Reset health when exiting ghost mode (for next track)
 		set_health(max_health)
-		
 		print("Ghost mode deactivated - player restored to normal state")
 
 func is_in_ghost_mode() -> bool:
 	"""Check if player is currently in ghost mode"""
 	return is_ghost_mode
+
+# External helpers for other systems
+func is_echo_ghost_alive() -> bool:
+	return is_echo_ghost() and not echo_ghost_dead
+
+func is_echo_ghost_dead() -> bool:
+	return is_echo_ghost() and echo_ghost_dead
+
+func is_spirit_ghost_alive() -> bool:
+	# Spirit ghost is always the dead player controlling; treat as not alive
+	return false
+
+# Determine recorded buffer duration in seconds
+func get_buffer_duration_seconds() -> float:
+	var tps = int(max(1, Engine.get_physics_ticks_per_second())) if _ticks_per_second <= 0 else _ticks_per_second
+	if _ticks_per_second <= 0:
+		_ticks_per_second = tps
+	return float(track1.buffer_size) / float(tps)
+
+# Drive ghost playback by sampling the recorded buffer at a local time [0, duration)
+func ghost_playback_at(local_time: float) -> void:
+	if track1.length == 0:
+		return
+	var duration := get_buffer_duration_seconds()
+	if duration <= 0.0:
+		return
+	var tps = _ticks_per_second if _ticks_per_second > 0 else int(max(1, Engine.get_physics_ticks_per_second()))
+	var frame := int(floor(clamp(local_time, 0.0, max(0.0, duration - (1.0 / float(tps)))) * float(tps)))
+	frame = clamp(frame, 0, max(0, track1.length - 1))
+	var tick = track1.get_at(frame)
+	if tick == null:
+		return
+	position = tick.position
+	velocity = tick.velocity
+	# Update echo ghost liveness from recorded health at this frame
+	if not ghost_is_spirit:
+		# tick.health is recorded during live play
+		var recorded_health = 1
+		recorded_health = tick.health
+		echo_ghost_dead = recorded_health <= 0
+		# Update ghost visuals for echo ghosts
+		if animations:
+			if echo_ghost_dead:
+				animations.modulate = dead_ghost_color_tint
+			else:
+				animations.modulate = live_ghost_color_tint
+	input_just_pressed.clear()
+	input_consumed.clear()
+
+# Whether this puppet allows a track switch this tick
+func can_switch_tracks() -> bool:
+	# Simple lockout: block while rewinding or in early dash frames
+	if is_rewinding:
+		return false
+	if current_action_type == "dash":
+		var time_since = total_time - current_action_start_time
+		if time_since <= dash_cancel_window:
+			return false
+	# Meta-time lockout (e.g., after knockback)
+	if has_meta("switch_lockout_until"):
+		var until_val = float(get_meta("switch_lockout_until"))
+		if total_time < until_val:
+			return false
+	return true

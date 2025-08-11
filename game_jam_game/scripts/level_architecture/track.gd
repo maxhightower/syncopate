@@ -17,6 +17,6 @@ func receive_input(event: InputEvent) -> void:
 	if _player:
 		_player._unhandled_input(event)
 
-func set_ghost_mode(enabled: bool) -> void:
+func set_ghost_mode(enabled: bool, as_spirit: bool = false) -> void:
 	if _player:
-		_player.set_ghost_mode(enabled)
+		_player.set_ghost_mode(enabled, as_spirit)

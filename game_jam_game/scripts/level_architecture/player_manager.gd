@@ -55,11 +55,11 @@ func _switch_to(new_idx: int) -> void:
 	if switching_locked or new_idx == active_index:
 		return
 	
-	tracks[active_index].set_ghost_mode(true)
+	tracks[active_index].set_ghost_mode(true, false)
 	active_index = clamp(new_idx, 0, tracks.size() - 1)
-	tracks[active_index].set_ghost_mode(false)
+	tracks[active_index].set_ghost_mode(false, false)
 
 func _set_active_track(idx: int) -> void:
 	active_index = idx
 	for i in range(tracks.size()):
-		tracks[i].set_ghost_mode(i != idx)
+		tracks[i].set_ghost_mode(i != idx, false)
