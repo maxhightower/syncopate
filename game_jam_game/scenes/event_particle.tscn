@@ -1,0 +1,20 @@
+[gd_scene load_steps=2 format=3 uid="uid://bd5qmwu7qmj1l"]
+
+[ext_resource type="Script" path="res://scripts/event_particle.gd" id="1_a8v1k"]
+
+[node name="EventParticle" type="Label"]
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -30.0
+offset_top = -16.0
+offset_right = 30.0
+offset_bottom = 16.0
+grow_horizontal = 2
+grow_vertical = 2
+text = "99"
+horizontal_alignment = 1
+vertical_alignment = 1
+script = ExtResource("1_a8v1k")
